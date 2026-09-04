@@ -1,0 +1,18 @@
+# Data Manipulation & Classical ML
+pandas
+numpy
+scikit-learn
+xgboost
+
+# Quantum Execution Engine
+pennylane
+qiskit
+qiskit-machine-learning
+
+# UI & Visualization
+streamlit
+matplotlib
+seaborn
+
+# Utilities
+joblib

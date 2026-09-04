@@ -1,0 +1,16 @@
+# Ignore Raw and Processed Datasets
+data/
+processed_data/
+*.csv
+*.xlsx
+
+# Ignore Large Model Artifacts (GitHub limits files to 100MB)
+models/
+*.pkl
+*.json
+
+# Ignore Python Caches and Environments
+__pycache__/
+*.pyc
+.env
+venv/
