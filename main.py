@@ -19,7 +19,7 @@ from src.module1_etl.imputation import clean_and_scale_features
 from src.module2_features.distribution import evaluate_distribution
 from src.module2_features.reduction import compress_features
 from src.module2_features.state_prep import prepare_quantum_state
-from src.module3_execution.quantum_circuit import execute_quantum_check
+from src.module3_execution.quantum_circuit import execute_quantum_check, execute_quantum_optimization
 from src.module3_execution.qsvm_fallback import train_and_predict_qsvm
 from src.module3_execution.xgboost_engine import execute_classical_fallback
 
@@ -67,23 +67,42 @@ def run_pipeline():
     logger.info("\n--- MODULE 3: EXECUTION ENGINE & QUANTUM FALLBACK ---")
     
     execution_path = execute_quantum_check(X_train_state)
-    
-    # Generate the XGBoost baseline artifact trained on balanced SMOTE data
-    logger.info("Generating balanced classical baseline artifact for UI compatibility...")
-    predictions = execute_classical_fallback(X_train_resampled, y_train_resampled, X_train_compressed.head(20))
+
+    # THE FIX: `predictions` used to be set unconditionally by
+    # execute_classical_fallback() *before* this branch even ran, so no
+    # matter what execution_path came back as, the XGBoost result is what
+    # got returned -- the "quantum_optimization" branch below had no code
+    # in it at all. Now each branch sets `predictions` exactly once, and
+    # the quantum path actually calls a QNN training routine instead of
+    # just logging a message.
+    predictions = None
 
     if execution_path == "quantum_optimization":
-        logger.info("Path Selected: Normal Gradient -> Proceeding with Parameter Optimization (θ).")
+        # execute_quantum_optimization() logs its own "Path Selected" line
+        # and reuses the exact circuit execute_quantum_check() evaluated,
+        # so the barren-plateau decision and the trained model agree.
+        predictions = execute_quantum_optimization(X_train_state, y_train)
+
     elif execution_path == "qsvm_fallback":
         logger.info("Path Selected: Barren Plateau Detected -> Routing to QSVM (Fallback 1).")
         subset_X_train = X_train_state.values[:50]
         subset_y_train = y_train.values[:50]
         subset_X_test = X_train_state.values[50:70]
         predictions = train_and_predict_qsvm(subset_X_train, subset_y_train, subset_X_test)
+
     elif execution_path == "classical_fallback":
         logger.info("Path Selected: Hardware Timeout/Error -> Routing to Penalized XGBoost (Fallback 2).")
-        
+        predictions = execute_classical_fallback(X_train_resampled, y_train_resampled, X_train_compressed.head(20))
+
+    else:
+        # Previously execute_quantum_check() could only return one of the
+        # three known strings, but if that ever changes, fail loudly
+        # instead of silently leaving `predictions` as None.
+        raise ValueError(f"execute_quantum_check() returned an unrecognized execution_path: {execution_path!r}")
+
+    logger.info(f"Engine used for this run: {execution_path}")
     logger.info("\n=== Pipeline Execution Complete. Artifacts generated in models/ ===")
+    return predictions, execution_path
 
 if __name__ == "__main__":
     run_pipeline()
