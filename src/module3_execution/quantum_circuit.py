@@ -1,78 +1,123 @@
+import json
 import pennylane as qml
-from pennylane import numpy as np
-import numpy as onp  # plain numpy, used only for artifact saving below
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import pandas as pd
+import numpy as np
 import logging
 from src.config import MODEL_DIR
+from src.module2_features.reduction import MatrixProductStateLayer, parse_temporal_features
 
 logger = logging.getLogger(__name__)
 
-# Initialize a PennyLane state simulator with 8 qubits
 n_qubits = 8
 dev = qml.device("default.qubit", wires=n_qubits)
 
-@qml.qnode(dev)
-def variational_circuit(features, weights):
-    """
-    Quantum circuit applying AngleEmbedding for features |x⟩
-    and strongly entangling layers for parameter optimization θ.
-    """
-    qml.AngleEmbedding(features, wires=range(n_qubits))
+TIME_ORDER = ['ALL', '180', '90', '30', '14', '7']
+
+
+@qml.qnode(dev, interface="torch")
+def variational_circuit(inputs, weights):
+    qml.AngleEmbedding(inputs, wires=range(n_qubits))
     qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
     return qml.expval(qml.PauliZ(0))
 
-def compute_gradient_variance(features_batch: np.ndarray, weights: np.ndarray) -> float:
-    """
-    Computes the gradient of the variational circuit with explicit trainable weights
-    to detect barren plateaus accurately.
-    """
-    # Ensure weights are tracked as differentiable parameters
-    weights_trainable = np.array(weights, requires_grad=True)
 
-    def cost_function(w):
-        # FIX: stacking into a single array before np.mean() is required --
-        # calling np.mean() directly on a Python list of autograd-traced
-        # QNode outputs raises inside numpy's internal dtype-casting step
-        # on current PennyLane/autograd versions. When that happens here,
-        # the exception propagates up and execute_quantum_check()'s
-        # try/except silently converts it into "classical_fallback",
-        # regardless of whether the gradient landscape is actually healthy.
-        expectations = np.stack([variational_circuit(f, w) for f in features_batch])
-        return np.mean(expectations)
+class HybridQuantumClassicalModel(nn.Module):
+    def __init__(self, mps_input_dims, static_dim: int = 0, n_layers: int = 3):
+        super().__init__()
+        self.mps_input_dims = mps_input_dims
+        self.static_dim = static_dim
+        self.n_layers = n_layers
+        
+        self.mps = MatrixProductStateLayer(input_dims=mps_input_dims, output_dim=n_qubits)
 
-    gradient_fn = qml.grad(cost_function)
-    gradients = gradient_fn(weights_trainable)
-    
-    # Flatten gradient structure and compute variance safely
-    grad_array = np.hstack([np.ravel(g) for g in gradients]) if isinstance(gradients, tuple) else np.ravel(gradients)
-    grad_variance = np.var(grad_array)
-    
-    return float(grad_variance)
+        if static_dim > 0:
+            self.static_fusion = nn.Sequential(
+                nn.Linear(n_qubits + static_dim, 16),
+                nn.LeakyReLU(0.1),
+                nn.Linear(16, n_qubits),
+            )
 
-def execute_quantum_check(X_state: pd.DataFrame, n_layers: int = 3, bp_threshold: float = 1e-4) -> str:
+        self.scaler = nn.Sigmoid()
+        weight_shapes = {"weights": (n_layers, n_qubits, 3)}
+        self.qnn = qml.qnn.TorchLayer(variational_circuit, weight_shapes)
+
+    def forward(self, x_seq, x_static: torch.Tensor = None):
+        compressed_state = self.mps(x_seq)
+
+        if self.static_dim > 0:
+            if x_static is None:
+                x_static = torch.zeros(
+                    compressed_state.shape[0], self.static_dim, dtype=compressed_state.dtype
+                )
+            fused = torch.cat([compressed_state, x_static], dim=-1)
+            compressed_state = self.static_fusion(fused)
+
+        scaled_angles = self.scaler(compressed_state) * torch.pi
+        expectation = self.qnn(scaled_angles)
+        return (1 - expectation) / 2
+
+
+def _build_sequences(X_state: pd.DataFrame):
+    feature_groups, static_features = parse_temporal_features(X_state)
+    active_steps = [t for t in TIME_ORDER if len(feature_groups[t]) > 0]
+    input_dims = [len(feature_groups[t]) for t in active_steps]
+
+    X_seq = [
+        torch.tensor(X_state[feature_groups[t]].values, dtype=torch.float32)
+        for t in active_steps
+    ]
+
+    static_dim = len(static_features)
+    X_static = None
+    if static_dim > 0:
+        X_static = torch.tensor(X_state[static_features].values, dtype=torch.float32)
+
+    return X_seq, X_static, static_features, active_steps, input_dims
+
+
+def compute_gradient_variance_pytorch(
+    model: nn.Module, X_batch_seq: list, X_batch_static: torch.Tensor = None
+) -> float:
+    model.zero_grad()
+    predictions = model(X_batch_seq, X_batch_static)
+    loss = predictions.mean()
+    loss.backward()
+
+    qnn_grads = model.qnn.weights.grad
+    if qnn_grads is None:
+        return 0.0
+
+    return torch.var(qnn_grads).item()
+
+
+def execute_quantum_check(model: HybridQuantumClassicalModel, X_state: pd.DataFrame, bp_threshold: float = 1e-4) -> str:
     """
-    Executes the hardware check and routes the pipeline based on gradient variance Var[∇C] < 10^-4.
+    Executes the hardware check using the passed unified model.
+    Returns the execution path string.
     """
-    logger.info("Initializing Quantum Circuit Executor (PennyLane)...")
-    
-    shape = qml.StronglyEntanglingLayers.shape(n_layers=n_layers, n_wires=n_qubits)
-    initial_weights = np.random.random(shape, requires_grad=True) * 2 * np.pi
-    
-    features_batch = X_state.values[:10]
-    
+    logger.info("Initializing Quantum Circuit Executor (PyTorch Autograd)...")
+
     try:
-        logger.info("Calculating gradient variance Var[∇C]...")
-        grad_variance = compute_gradient_variance(features_batch, initial_weights)
-        
+        features_batch = X_state.head(10)
+        X_seq_batch, X_static_batch, static_features, _, _ = _build_sequences(features_batch)
+
+        if static_features:
+            logger.info(f"Fusing {len(static_features)} static feature(s) into the quantum embedding...")
+
+        logger.info("Calculating gradient variance Var[∇θ]...")
+        grad_variance = compute_gradient_variance_pytorch(model, X_seq_batch, X_static_batch)
         logger.info(f"Gradient variance computed: {grad_variance:.6e}")
-        
+
         if np.isnan(grad_variance) or grad_variance < bp_threshold:
-            logger.warning(f"Barren Plateau Detected or Invalid Variance. Routing to Fallback 1 (QSVM).")
+            logger.warning("Barren Plateau Detected. Routing to Fallback 1 (QSVM).")
             return "qsvm_fallback"
         else:
-            logger.info("Normal Gradient detected. Proceeding with Parameter Optimization (θ).")
+            logger.info("Normal Gradient detected. Proceeding with Joint MPS-QNN Parameter Optimization (θ).")
             return "quantum_optimization"
-            
+
     except Exception as e:
         logger.error(f"Simulator error or timeout encountered: {e}")
         logger.info("Routing to Fallback 2 (Classical XGBoost).")
@@ -80,54 +125,54 @@ def execute_quantum_check(X_state: pd.DataFrame, n_layers: int = 3, bp_threshold
 
 
 def execute_quantum_optimization(
+    model: HybridQuantumClassicalModel,
     X_state: pd.DataFrame,
     y_train: pd.Series,
-    n_layers: int = 3,
     epochs: int = 20,
-    lr: float = 0.1,
-    max_rows: int = 200,  # <-- ADDED CAP
+    lr: float = 0.01
 ) -> np.ndarray:
     """
-    Runs the QNN training + inference for the "Normal Gradient" path.
-    Uses `max_rows` to subsample the training dataset, preventing 
-    out-of-memory (OOM) errors caused by Autograd computation graphs.
+    Runs training using the exact model instance previously validated.
     """
-    logger.info("Initializing QNN parameter optimization (θ)...")
+    logger.info("Initializing Joint PyTorch-PennyLane End-to-End Training...")
 
-    # Subsample to cap memory usage during the Autograd backward pass
-    if len(X_state) > max_rows:
-        logger.info(f"Capping training data from {len(X_state)} to {max_rows} rows to avoid OOM.")
-        # Data is already shuffled by train_test_split in main.py, so a simple slice is safe
-        X_train_sub = X_state.values[:max_rows] if hasattr(X_state, "values") else np.array(X_state)[:max_rows]
-        y_train_sub = y_train.values[:max_rows] if hasattr(y_train, "values") else np.array(y_train)[:max_rows]
-    else:
-        X_train_sub = X_state.values if hasattr(X_state, "values") else np.array(X_state)
-        y_train_sub = y_train.values if hasattr(y_train, "values") else np.array(y_train)
+    X_seq_tensors, X_static_tensor, static_features, active_steps, input_dims = _build_sequences(X_state)
+    y_tensor = torch.tensor(y_train.values, dtype=torch.float32)
 
-    shape = qml.StronglyEntanglingLayers.shape(n_layers=n_layers, n_wires=n_qubits)
-    weights = np.random.random(shape, requires_grad=True) * 2 * np.pi
+    static_dim = len(static_features)
+    if static_dim > 0:
+        logger.info(f"Training with {static_dim} static feature(s) fused.")
 
-    opt = qml.AdamOptimizer(stepsize=lr)
-    eps = 1e-7
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.BCELoss()
 
-    def cost(w):
-        # The backward pass runs ONLY on the capped subset
-        expectations = np.stack([variational_circuit(f, w) for f in X_train_sub])
-        probs = np.clip((1 - expectations) / 2, eps, 1 - eps)
-        return -np.mean(y_train_sub * np.log(probs) + (1 - y_train_sub) * np.log(1 - probs))
-
+    model.train()
     for epoch in range(epochs):
-        weights, loss = opt.step_and_cost(cost, weights)
-        logger.info(f"  QNN epoch {epoch + 1}/{epochs} - loss={float(loss):.5f}")
+        optimizer.zero_grad()
+        predictions = model(X_seq_tensors, X_static_tensor)
+        loss = criterion(predictions, y_tensor)
+        loss.backward()
+        optimizer.step()
+        logger.info(f"  Hybrid Joint Epoch {epoch + 1}/{epochs} - loss={loss.item():.5f}")
 
-    # Inference step runs on the FULL dataset (No gradients tracked = no memory blowup)
-    X_full = X_state.values if hasattr(X_state, "values") else np.array(X_state)
-    final_expectations = np.array([variational_circuit(f, weights) for f in X_full])
-    final_probs = (1 - final_expectations) / 2
+    model.eval()
+    with torch.no_grad():
+        final_probs = model(X_seq_tensors, X_static_tensor).numpy().flatten()
 
-    # Save the trained weights artifact
-    model_path = MODEL_DIR / "qnn_weights.npy"
-    onp.save(model_path, onp.array(weights))
-    logger.info(f"QNN weights saved to {model_path}")
+    model_path = MODEL_DIR / "hybrid_mps_qnn.pt"
+    torch.save(model.state_dict(), model_path)
+    logger.info(f"Joint Hybrid model architecture saved to {model_path}")
+
+    meta = {
+        "active_steps": active_steps,
+        "input_dims": input_dims,
+        "static_features": static_features,
+        "static_dim": static_dim,
+        "n_layers": model.n_layers,
+    }
+    meta_path = MODEL_DIR / "hybrid_mps_qnn_meta.json"
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+    logger.info(f"Saved hybrid model architecture metadata to {meta_path}")
 
     return final_probs
