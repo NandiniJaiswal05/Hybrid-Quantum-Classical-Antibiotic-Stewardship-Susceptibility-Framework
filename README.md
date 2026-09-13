@@ -236,8 +236,6 @@ Depending on the resulting probability and uncertainty, the Streamlit interface 
 ---
 
 # 📁 Project Directory Structure
-
-```text
 Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework/
 │
 ├── data/
@@ -287,7 +285,6 @@ Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework/
 ├── evaluate_metrics.py
 ├── requirements.txt
 └── README.md
-```
 
 ---
 
