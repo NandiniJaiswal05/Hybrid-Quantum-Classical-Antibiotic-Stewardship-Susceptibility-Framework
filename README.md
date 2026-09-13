@@ -74,8 +74,3 @@ Open your terminal or command prompt and clone the repository:
 ```bash
 git clone [https://github.com/NandiniJaiswal05/Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework.git](https://github.com/NandiniJaiswal05/Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework.git)
 cd Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework
-
-1. **Clone the repository:**
-   ```bash
-   git clone [https://github.com/NandiniJaiswal05/Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework.git](https://github.com/NandiniJaiswal05/Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework.git)
-   cd Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework
