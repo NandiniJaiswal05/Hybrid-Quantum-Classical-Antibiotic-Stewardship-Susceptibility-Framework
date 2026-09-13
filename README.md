@@ -539,9 +539,13 @@ MIT License
 
 # 👥 Contributors
 
+**Kanak Dharamthok**
+
+**Khushbu Gupta**
+
 **Nandini Jaiswal**
 
-**Kanak Dharamthok**
+**Sanvi Goja**
 
 ---
 
@@ -565,4 +569,3 @@ This project integrates concepts and technologies from:
   <br>
   Researching the intersection of Quantum ML, Clinical AI, and Antimicrobial Resistance
 </p>
-```
