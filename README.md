@@ -43,6 +43,54 @@ The architecture is divided into five distinct modular layers:
 *   **Clinical Alert Decision:** Compares the calibrated resistance probability against a dynamically tuned clinical safety threshold to trigger final UI warnings.
 
 ---
+## 📁 Project Directory Structure
+
+```text
+Hybrid-Quantum-Classical-Antibiotic-Stewardship-Susceptibility-Framework/
+│
+├── data/
+│   ├── raw/
+│   │   ├── all_uti_features.csv
+│   │   ├── all_uti_resist_labels.csv
+│   │   ├── all_prescriptions.csv
+│   │   └── data_dictionary.csv
+│   └── processed/
+│       └── processed_clinical_data.csv
+│
+├── models/
+│   ├── standard_scaler.pkl
+│   ├── quantum_state_scaler.pkl
+│   ├── xgb_baseline.json
+│   ├── hybrid_mps_qnn.pt
+│   ├── hybrid_mps_qnn_meta.json
+│   ├── qsvm_weights.pkl
+│   ├── qsvm_train_embeddings.npy
+│   ├── qsvm_mps_embedder.pt
+│   └── qsvm_mps_embedder_meta.json
+│
+├── src/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── module1_etl/
+│   │   ├── __init__.py
+│   │   ├── ingestion.py
+│   │   ├── imputation.py
+│   │   └── distribution.py
+│   ├── module2_features/
+│   │   ├── __init__.py
+│   │   ├── reduction.py
+│   │   └── state_prep.py
+│   └── module3_execution/
+│       ├── __init__.py
+│       ├── quantum_circuit.py
+│       ├── qsvm_fallback.py
+│       └── xgboost_engine.py
+│
+├── apps.py
+├── main.py
+├── evaluate_metrics.py
+├── requirements.txt
+└── README.md
 
 ## 📊 Clinical Performance & Threshold Tuning
 
