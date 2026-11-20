@@ -1,4 +1,4 @@
-# 🧬 Hybrid Quantum-Classical Antibiotic Stewardship Susceptibility Framework
+# 🧬 Hybrid Quantum-Classical Machine Learning for Antimicrobial Resistance Prediction in Urinary Tract Infections
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?style=for-the-badge&logo=python)
 ![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)
